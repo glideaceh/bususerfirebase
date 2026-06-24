@@ -14,8 +14,6 @@
   const app = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
   
-  });
-  
 document.addEventListener('DOMContentLoaded', function() {
     initCityData();
     loadLayananData();
