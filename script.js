@@ -1,44 +1,43 @@
-// Your web app's Firebase configuration
-  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-  const firebaseConfig = {
+// =================================================================
+// 1. INISIALISASI FIREBASE (Menggantikan URL GAS)
+// =================================================================
+const firebaseConfig = {
     apiKey: "AIzaSyC2D7HFSS_EoMn5_AB2uxERB6XH6028MGU",
     authDomain: "booking-bus-160993.firebaseapp.com",
     projectId: "booking-bus-160993",
     storageBucket: "booking-bus-160993.firebasestorage.app",
     messagingSenderId: "34576580396",
-    appId: "1:34576580396:web:64bbd3005afb082ba13689",
-    measurementId: "G-3KL6VKS818"
-  };
+    appId: "1:34576580396:web:64bbd3005afb082ba13689"
+};
 
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-  const analytics = getAnalytics(app);
-  
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// =================================================================
+// 2. KODE UTAMA APLIKASI
+// =================================================================
 document.addEventListener('DOMContentLoaded', function() {
     initCityData();
-    loadLayananData();
+    getLayananFromFirebase(); // Memanggil data dari Firebase saat awal buka
     setupDatePills();
     setInterval(() => { silentRefreshLayananData(); }, 60000);
     setInterval(() => {
         if(document.getElementById('tiketView').classList.contains('active')) { silentRefreshHistoryData(); }
     }, 10000);
 
-    // Logika touchmove diperketat untuk menangkal pull-to-refresh
     let touchStartY = 0;
     document.addEventListener('touchstart', function(e) { touchStartY = e.touches[0].clientY; }, { passive: true });
     document.addEventListener('touchmove', function(e) {
         let scrollableEl = e.target.closest('.sheet-list, .bus-detail-panel, .app-container, .ticket-modal-white, .search-results-content');
         if (!scrollableEl) { if (e.cancelable) e.preventDefault(); return; }
         let isPullingDown = e.touches[0].clientY > touchStartY;
-        // Hanya prevent default jika mencoba pull down saat berada di puncak scroll
         if (isPullingDown && scrollableEl.scrollTop <= 0) { 
-            if (e.cancelable) e.preventDefault(); 
+            if (e.cancelable) e.preventDefault();
         }
     }, { passive: false });
 });
 
 flatpickr("#inputDepart", { locale: "id", dateFormat: "Y-m-d", altInput: true, altFormat: "l, j F Y", minDate: "today", disableMobile: "true" });
-
 flatpickr("#bookingDateInput", {
     locale: "id", dateFormat: "Y-m-d", minDate: "today", disableMobile: "true",
     onChange: function(selectedDates, dateStr, instance) {
@@ -46,7 +45,6 @@ flatpickr("#bookingDateInput", {
         const formatted = selectedDates[0].toLocaleDateString('id-ID', {day: '2-digit', month: 'short', year: 'numeric'});
         document.getElementById('bookingDateDisplay').innerText = formatted;
 
-        // Reset kursi saat ganti tanggal
         selectedSeatIds = [];
         document.getElementById('displayPrice').innerText = "0";
         document.getElementById('displaySeat').innerText = "Belum pilih kursi";
@@ -58,11 +56,9 @@ flatpickr("#bookingDateInput", {
             if (offDateVal && offDateVal.toString().trim() !== "") {
                 let offDate = "";
                 let dObj = new Date(offDateVal);
-                if (!isNaN(dObj)) { offDate = dObj.getFullYear() + "-" + String(dObj.getMonth() + 1).padStart(2, '0') + "-" + String(dObj.getDate()).padStart(2, '0');
-                }
+                if (!isNaN(dObj)) { offDate = dObj.getFullYear() + "-" + String(dObj.getMonth() + 1).padStart(2, '0') + "-" + String(dObj.getDate()).padStart(2, '0'); }
                 else { offDate = offDateVal.toString().split('T')[0]; }
-                if (offDate === dateStr || offDateVal.includes(dateStr)) { isOperating = false;
-                }
+                if (offDate === dateStr || offDateVal.includes(dateStr)) { isOperating = false; }
             }
         }
         if (!isOperating) {
@@ -150,32 +146,79 @@ function clearDateFilter() {
     filterAndRenderTickets();
 }
 
-async function loadLayananData() {
+// =================================================================
+// 3. FUNGSI FIREBASE (Baca/Tulis Data)
+// =================================================================
+
+async function getLayananFromFirebase() {
     try {
-        let [resLayanan, resFasilitas] = await Promise.all([ fetch(GAS_URL + "?action=getAllLayanan"), fetch(GAS_URL + "?action=getFacilities") ]);
-        allLayananData = await resLayanan.json();
-        databaseFasilitas = await resFasilitas.json();
+        const snapshot = await db.collection("Layanan").get();
+        allLayananData = [];
+        snapshot.forEach((doc) => {
+            allLayananData.push(doc.data());
+        });
+
+        // Mapping Data Kendaraan & Perusahaan
         let uniqueJenis = [...new Set(allLayananData.map(item => item.jenis).filter(Boolean))];
         databaseKendaraan = uniqueJenis.map(j => ({name: j, icon: "fa-bus"}));
+        
         let uniqueCompany = [...new Set(allLayananData.map(item => item.namaPerusahaan).filter(Boolean))];
         databaseCompany = uniqueCompany;
+        
+        // Asumsi fasilitas diset manual sementara jika tabel Fasilitas belum ada di Firebase
+        databaseFasilitas = [
+            {nama: "AC", icon: "fa-snowflake"}, {nama: "Toilet", icon: "fa-restroom"}, 
+            {nama: "Makan", icon: "fa-utensils"}, {nama: "Bantal", icon: "fa-bed"}
+        ];
+
         document.getElementById('loadingCards').style.display = 'none';
         renderServiceCards(allLayananData, 'ticketCardsContainer', false, null);
-    } catch(e) { document.getElementById('loadingCards').innerHTML = "<p style='color:red;'>Gagal terhubung ke database.</p>"; }
+    } catch(error) { 
+        console.error("Gagal memuat jadwal: ", error);
+        document.getElementById('loadingCards').innerHTML = "<p style='color:red;'>Gagal terhubung ke database jadwal.</p>"; 
+    }
 }
 
 async function silentRefreshLayananData() {
     try {
-        let res = await fetch(GAS_URL + "?action=getAllLayanan");
-        allLayananData = await res.json();
+        const snapshot = await db.collection("Layanan").get();
+        allLayananData = [];
+        snapshot.forEach((doc) => { allLayananData.push(doc.data()); });
+        
         let uniqueJenis = [...new Set(allLayananData.map(item => item.jenis).filter(Boolean))];
         databaseKendaraan = uniqueJenis.map(j => ({name: j, icon: "fa-bus"}));
         databaseCompany = [...new Set(allLayananData.map(item => item.namaPerusahaan).filter(Boolean))];
+        
         if(!document.getElementById('searchResultsPanel').classList.contains('active')){
             renderServiceCards(allLayananData, 'ticketCardsContainer', false, null);
         }
     } catch(e) { console.error("Silent refresh gagal:", e); }
 }
+
+async function getBookedSeatsFromFirebase() {
+    let dateOnly = selectedBookingDate.split('T')[0];
+    const snapshot = await db.collection("Pemesanan")
+        .where("namaPerusahaan", "==", activeLayananData.namaPerusahaan)
+        .where("merkKendaraan", "==", activeLayananData.merk)
+        .get();
+
+    let bookedSeats = [];
+    snapshot.forEach(doc => {
+        let data = doc.data();
+        let tglDB = data.tanggalBooking ? data.tanggalBooking.split('T')[0] : "";
+        let status = data.statusBooking ? data.statusBooking.toLowerCase() : "";
+        
+        if(tglDB === dateOnly && !status.includes('batal')) {
+            let seats = data.nomorKursi.split(',').map(s => s.trim());
+            bookedSeats.push(...seats);
+        }
+    });
+    return bookedSeats;
+}
+
+// =================================================================
+// 4. LOGIKA UI & FILTER
+// =================================================================
 
 function calculateRealDuration(depart, arrive) {
     if(!depart || !arrive) return "-";
@@ -223,11 +266,9 @@ function renderServiceCards(data, targetContainerId, isSearchMode = false, searc
         let btnHtml = isOperating ?
         `<button class="booking-btn-card" onclick="openBusDetail(${originalIndex}, '${compareDate}')">Pilih Kursi</button>` :
         `<button class="booking-btn-card disabled" disabled>Tidak Beroperasi</button>`;
-        
         let badgeHtml = isOperating ?
         `<span class="badge-cheapest">${item.namaPerusahaan}</span>` :
         `<span class="badge-cheapest">Tidak Beroperasi</span>`;
-        
         let html = `
         <div class="${cardClass}">
         <div class="ticket-header">
@@ -269,7 +310,6 @@ function executeSearch() {
     }
     
     document.getElementById('busSearchLoader').classList.add('active');
-    
     setTimeout(() => {
         document.getElementById('busSearchLoader').classList.remove('active');
         let filteredData = allLayananData.filter(item => {
@@ -316,15 +356,22 @@ function switchTab(tabId, el) {
     if(tabId === 'tiketView') fetchMyTicketsHistory();
 }
 
+async function getHistoryTicketsFromFirebase() {
+    const snapshot = await db.collection("Pemesanan").where("userid", "==", SESSION_USER_ID).get();
+    let tickets = [];
+    snapshot.forEach(doc => tickets.push(doc.data()));
+    tickets.sort((a, b) => new Date(b.waktuPemesanan) - new Date(a.waktuPemesanan));
+    return tickets;
+}
+
 async function silentRefreshHistoryData() {
     try {
-        let res = await fetch(GAS_URL + "?action=getHistory&userid=" + encodeURIComponent(SESSION_USER_ID));
-        let newData = await res.json();
+        let newData = await getHistoryTicketsFromFirebase();
         if (JSON.stringify(newData) !== JSON.stringify(myHistoryTickets)) {
             myHistoryTickets = newData;
             filterAndRenderTickets();
         }
-    } catch(e) { console.warn("Silent refresh gagal: ", e); }
+    } catch(e) { console.warn("Silent refresh history gagal: ", e); }
 }
 
 async function fetchMyTicketsHistory() {
@@ -334,8 +381,7 @@ async function fetchMyTicketsHistory() {
     loading.style.display = 'block';
     
     try {
-        let res = await fetch(GAS_URL + "?action=getHistory&userid=" + encodeURIComponent(SESSION_USER_ID));
-        myHistoryTickets = await res.json();
+        myHistoryTickets = await getHistoryTicketsFromFirebase();
         loading.style.display = 'none';
         
         const today = new Date();
@@ -343,7 +389,6 @@ async function fetchMyTicketsHistory() {
         let mm = String(today.getMonth() + 1).padStart(2, '0');
         let dd = String(today.getDate()).padStart(2, '0');
         activeFilterDateStr = `${yy}-${mm}-${dd}`;
-        
         document.querySelectorAll('.date-card').forEach(c => {
             c.classList.remove('active');
             if (c.querySelector('.date').innerText == today.getDate()) { c.classList.add('active'); }
@@ -383,7 +428,6 @@ function filterAndRenderTickets() {
 function renderHistoryList(data) {
     const container = document.getElementById('historyList');
     Array.from(container.children).forEach(child => { if(child.id !== 'loadingIndicator') child.remove(); });
-    
     if (data.length === 0) {
         container.insertAdjacentHTML('beforeend', '<p style="text-align:center; color:#94A3B8; margin-top:30px; font-weight:500;">Tidak ada pesanan ditemukan.</p>');
         return;
@@ -399,10 +443,8 @@ function renderHistoryList(data) {
         
         let displayDate = item.tanggalBooking && item.tanggalBooking !== "" ? new Date(item.tanggalBooking) : new Date(item.waktuPemesanan);
         let dateStr = !isNaN(displayDate) ? displayDate.toLocaleDateString('id-ID', {day: '2-digit', month: 'short', year: 'numeric'}) : "-";
-        
         let bookingTimeObj = new Date(item.waktuPemesanan);
         let timeStr = !isNaN(bookingTimeObj) ? bookingTimeObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}) : "00:00";
-        
         let delay = index * 0.05;
         let ruteText = (item.asal && item.tujuan) ? `${item.asal} - ${item.tujuan}` : "Rute Tidak Diketahui";
         
@@ -413,27 +455,20 @@ function renderHistoryList(data) {
         let html = `
         <div class="history-card" style="animation-delay: ${delay}s" onclick='openTicketModal(${JSON.stringify(item)})'>
         <div class="card-top">
-        <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;">
-        <i class="far fa-calendar-alt" style="margin-right: 4px;"></i> ${dateStr}
-        </span>
+        <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;"><i class="far fa-calendar-alt" style="margin-right: 4px;"></i> ${dateStr}</span>
         <span class="status-badge ${statClass}">${statText}</span>
         </div>
         <div class="card-body">
-        <div class="time-col">
-        ${timeStr}<br>
-        <span style="font-size:10px; font-weight:500; color:var(--text-muted);">WIB</span>
-        </div>
+        <div class="time-col">${timeStr}<br><span style="font-size:10px; font-weight:500; color:var(--text-muted);">WIB</span></div>
         <div style="width: 2px; height: 35px; background: #E2E8F0; margin: 0 5px;"></div>
         <div class="route-col">
         <h3 style="font-size: 15px; font-weight: 700; margin: 0 0 4px 0; color: var(--text-dark);">${ruteText}</h3>
         <p style="font-size: 12px; color: var(--text-muted); margin: 0; font-weight: 500;">${item.merkKendaraan} • Kursi ${item.nomorKursi}</p>
-        </div>
-        </div>
+        </div></div>
         <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px dashed #E2E8F0; margin-top: 10px;">
         ${footerActionHtml}
         <span class="booking-id-text">ID: ${item.idBooking}</span>
-        </div>
-        </div>`;
+        </div></div>`;
         container.insertAdjacentHTML('beforeend', html);
     });
 }
@@ -449,17 +484,21 @@ async function processCancelTicket() {
     const originalText = btn.innerHTML;
     btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Memproses...';
     btn.disabled = true;
-    const payload = { action: "cancelTicket", userid: SESSION_USER_ID, idBooking: targetCancelId };
+    
     try {
-        let res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify(payload) });
-        let result = await res.json();
-        if (result.status === "success") {
-            closeCustomPopups();
-            myHistoryTickets = myHistoryTickets.filter(t => t.idBooking !== targetCancelId);
-            filterAndRenderTickets();
-        } else { alert("Gagal membatalkan: " + result.message); }
-    } catch(e) { alert("Kesalahan jaringan saat mencoba membatalkan pesanan."); }
-    finally { btn.innerHTML = originalText; btn.disabled = false; targetCancelId = null; }
+        const snapshot = await db.collection("Pemesanan").where("idBooking", "==", targetCancelId).get();
+        let batch = db.batch();
+        snapshot.forEach(doc => { batch.delete(doc.ref); });
+        await batch.commit(); // Hapus data di Firestore
+        
+        closeCustomPopups();
+        myHistoryTickets = myHistoryTickets.filter(t => t.idBooking !== targetCancelId);
+        filterAndRenderTickets();
+    } catch(e) { 
+        alert("Kesalahan jaringan saat mencoba membatalkan pesanan.");
+    } finally { 
+        btn.innerHTML = originalText; btn.disabled = false; targetCancelId = null;
+    }
 }
 
 function openTicketModal(item) {
@@ -469,22 +508,17 @@ function openTicketModal(item) {
     document.getElementById('modalKursi').innerText = item.nomorKursi;
     document.getElementById('modalRute').innerText = (item.asal && item.tujuan) ? `${item.asal} - ${item.tujuan}` : (item.rute || "-");
     document.getElementById('modalVehicleDetail').innerText = `${item.merkKendaraan} (${item.jenisKendaraan || '-'})`;
-    
     let dateObj = item.tanggalBooking && item.tanggalBooking !== "" ? new Date(item.tanggalBooking) : new Date(item.waktuPemesanan);
-    document.getElementById('modalTanggal').innerText = !isNaN(dateObj) ?
-    dateObj.toLocaleDateString('id-ID', {day: '2-digit', month: 'short', year: 'numeric'}) : item.waktuPemesanan;
-    
+    document.getElementById('modalTanggal').innerText = !isNaN(dateObj) ? dateObj.toLocaleDateString('id-ID', {day: '2-digit', month: 'short', year: 'numeric'}) : item.waktuPemesanan;
     let bookingTimeObj = new Date(item.waktuPemesanan);
-    document.getElementById('modalJam').innerText = !isNaN(bookingTimeObj) ?
-    bookingTimeObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}) + " WIB" : "-";
+    document.getElementById('modalJam').innerText = !isNaN(bookingTimeObj) ? bookingTimeObj.toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}) + " WIB" : "-";
     
     const badge = document.getElementById('modalStatusBadge');
     let statText = item.statusBooking || 'Belum Bayar';
     badge.innerText = statText;
     
     if(statText.toLowerCase().includes("belum") || statText.toLowerCase().includes("batal")) {
-        badge.style.background = "rgba(239, 68, 68, 0.1)";
-        badge.style.color = "#EF4444";
+        badge.style.background = "rgba(239, 68, 68, 0.1)"; badge.style.color = "#EF4444";
     } else {
         badge.style.background = "rgba(16, 185, 129, 0.1)"; badge.style.color = "#10B981";
     }
@@ -492,8 +526,7 @@ function openTicketModal(item) {
     const qrContainer = document.getElementById("qrcode");
     qrContainer.innerHTML = "";
     qrcodeObj = new QRCode(qrContainer, {
-        text: item.idBooking, width: 120, height: 120,
-        colorDark : "#1E293B", colorLight : "#ffffff", correctLevel : QRCode.CorrectLevel.H
+        text: item.idBooking, width: 120, height: 120, colorDark : "#1E293B", colorLight : "#ffffff", correctLevel : QRCode.CorrectLevel.H
     });
     document.getElementById('ticketModal').classList.add('active');
 }
@@ -510,12 +543,11 @@ async function openBusDetail(index, passedSearchDate = "") {
     document.getElementById('detailClass').innerText = item.jenis;
     document.getElementById('detailMerk').innerText = item.merk;
     document.getElementById('detailRoute').innerHTML = `<i class="fa-solid fa-route" style="margin-right: 6px;"></i> ${item.asal} <i class="fa-solid fa-arrow-right" style="margin: 0 4px; font-size: 10px;"></i> ${item.tujuan}`;
-    
     const heroBanner = document.getElementById('detailBannerHero');
     if(item.foto && item.foto.trim() !== "") { 
         heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,0.6) 0%, rgba(244, 247, 251, 0.2) 50%, var(--bg-light) 100%), url('${item.foto}')`;
     } else { 
-        heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,0.6) 0%, rgba(244, 247, 251, 0.2) 50%, var(--bg-light) 100%), url('https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?q=80&w=800&auto=format&fit=crop')`; 
+        heroBanner.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,0.6) 0%, rgba(244, 247, 251, 0.2) 50%, var(--bg-light) 100%), url('https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?q=80&w=800&auto=format&fit=crop')`;
     }
     
     const facContainer = document.getElementById('amenitiesGrid');
@@ -531,8 +563,7 @@ async function openBusDetail(index, passedSearchDate = "") {
     }
     
     const today = new Date();
-    let yy = today.getFullYear(); let mm = String(today.getMonth() + 1).padStart(2, '0');
-    let dd = String(today.getDate()).padStart(2, '0');
+    let yy = today.getFullYear(); let mm = String(today.getMonth() + 1).padStart(2, '0'); let dd = String(today.getDate()).padStart(2, '0');
     let todayStr = `${yy}-${mm}-${dd}`;
     
     selectedBookingDate = passedSearchDate || todayStr;
@@ -544,18 +575,13 @@ async function openBusDetail(index, passedSearchDate = "") {
     refreshSeatLayout();
     
     if(seatPollingInterval) clearInterval(seatPollingInterval);
-    seatPollingInterval = setInterval(() => {
-        silentSeatRefresh();
-    }, 5000);
+    seatPollingInterval = setInterval(() => { silentSeatRefresh(); }, 5000);
 }
 
 async function refreshSeatLayout() {
     document.getElementById('seatLayoutGrid').innerHTML = '<div style="grid-column: span 5; text-align: center; padding: 20px; color: var(--text-muted);"><i class="fa-solid fa-circle-notch fa-spin"></i> Mengecek ketersediaan kursi...</div>';
     try {
-        let dateOnly = selectedBookingDate.split('T')[0];
-        let url = `${GAS_URL}?action=getBookedSeats&perusahaan=${encodeURIComponent(activeLayananData.namaPerusahaan)}&merk=${encodeURIComponent(activeLayananData.merk)}&tanggal=${encodeURIComponent(dateOnly)}`;
-        let res = await fetch(url);
-        let bookedSeats = await res.json();
+        let bookedSeats = await getBookedSeatsFromFirebase();
         generateSeats(activeLayananData.kapasitas, bookedSeats);
     } catch(e) {
         console.error("Gagal mengecek kursi", e);
@@ -566,14 +592,10 @@ async function refreshSeatLayout() {
 async function silentSeatRefresh() {
     if (!activeLayananData) return;
     try {
-        let dateOnly = selectedBookingDate.split('T')[0];
-        let url = `${GAS_URL}?action=getBookedSeats&perusahaan=${encodeURIComponent(activeLayananData.namaPerusahaan)}&merk=${encodeURIComponent(activeLayananData.merk)}&tanggal=${encodeURIComponent(dateOnly)}`;
-        let res = await fetch(url);
-        let bookedSeats = await res.json();
-
+        let bookedSeats = await getBookedSeatsFromFirebase();
         const nodes = document.querySelectorAll('.seat-node:not(.empty):not(.aisle):not(.driver)');
         let selectionStolen = false;
-
+        
         nodes.forEach(node => {
             let span = node.querySelector('span');
             if(!span) return;
@@ -605,10 +627,8 @@ async function silentSeatRefresh() {
         let availableCount = cap - actualBookedCount;
         let legendAvail = document.querySelector('.ml-dot.avail');
         let legendBooked = document.querySelector('.ml-dot.booked');
-        
         if(legendAvail) legendAvail.parentNode.innerHTML = `<div class="ml-dot avail"></div>Bisa (${availableCount})`;
         if(legendBooked) legendBooked.parentNode.innerHTML = `<div class="ml-dot booked"></div>Full (${actualBookedCount})`;
-
     } catch(e) { console.error("Silent seat refresh failed", e); }
 }
 
@@ -622,10 +642,8 @@ function closeBusDetail() {
 function generateSeats(kapasitas, bookedSeatsArray = []) {
     const grid = document.getElementById('seatLayoutGrid');
     grid.innerHTML = '';
-    let cap = parseInt(kapasitas) || 0;
-    let actualBookedCount = 0;
-    let tempCol = 0;
-    let tempRow = 1;
+    let cap = parseInt(kapasitas) || 0; let actualBookedCount = 0;
+    let tempCol = 0; let tempRow = 1;
     const colsT = ['A', 'B', 'C', 'D'];
     
     for(let i = 1; i <= cap; i++) {
@@ -639,9 +657,7 @@ function generateSeats(kapasitas, bookedSeatsArray = []) {
     grid.innerHTML += `<div class="modern-legend-panel"><div class="ml-item"><div class="ml-dot avail"></div>Bisa (${availableCount})</div><div class="ml-item"><div class="ml-dot booked"></div>Full (${actualBookedCount})</div><div class="ml-item"><div class="ml-dot sel"></div>Pilih</div></div>`;
     grid.innerHTML += `<div class="seat-node empty"></div><div class="seat-node empty"></div><div class="seat-node aisle"></div><div class="seat-node empty"></div><div class="seat-node driver"><i class="fa-solid fa-dharmachakra"></i></div>`;
     
-    let colIndex = 0;
-    let rowIndex = 1; const cols = ['A', 'B', 'C', 'D'];
-    
+    let colIndex = 0; let rowIndex = 1; const cols = ['A', 'B', 'C', 'D'];
     for(let i = 1; i <= cap; i++) {
         let label = rowIndex + cols[colIndex];
         let isBooked = bookedSeatsArray.includes(label);
@@ -674,7 +690,7 @@ function toggleSeatSelection(node, label) {
 
 function updateCheckoutPanel() {
     if (selectedSeatIds.length === 0) {
-        document.getElementById('displayPrice').innerText = "0"; 
+        document.getElementById('displayPrice').innerText = "0";
         document.getElementById('displaySeat').innerText = "Belum pilih kursi";
         document.getElementById('btnConfirmSeat').disabled = true;
     } else {
@@ -692,39 +708,28 @@ function openCitySheet(target) {
     renderCityList(databaseKota);
 }
 function openVehicleSheet() {
-    document.getElementById('modalOverlay').classList.add('active');
-    document.getElementById('vehicleBottomSheet').classList.add('active');
+    document.getElementById('modalOverlay').classList.add('active'); document.getElementById('vehicleBottomSheet').classList.add('active');
     renderVehicleList(databaseKendaraan);
 }
 function openCompanySheet() {
-    document.getElementById('modalOverlay').classList.add('active');
-    document.getElementById('companyBottomSheet').classList.add('active');
+    document.getElementById('modalOverlay').classList.add('active'); document.getElementById('companyBottomSheet').classList.add('active');
     renderCompanyList(databaseCompany);
 }
 function closeAllSheets() {
-    document.getElementById('modalOverlay').classList.remove('active');
-    document.getElementById('cityBottomSheet').classList.remove('active');
-    document.getElementById('vehicleBottomSheet').classList.remove('active');
-    document.getElementById('companyBottomSheet').classList.remove('active');
+    document.getElementById('modalOverlay').classList.remove('active'); document.getElementById('cityBottomSheet').classList.remove('active');
+    document.getElementById('vehicleBottomSheet').classList.remove('active'); document.getElementById('companyBottomSheet').classList.remove('active');
 }
 function handleCitySearch(e) {
-    const q = e.target.value.toLowerCase();
-    const filtered = databaseKota.filter(c => c.toLowerCase().includes(q));
-    renderCityList(filtered);
+    const q = e.target.value.toLowerCase(); const filtered = databaseKota.filter(c => c.toLowerCase().includes(q)); renderCityList(filtered);
 }
 function handleVehicleSearch(e) {
-    const q = e.target.value.toLowerCase();
-    const filtered = databaseKendaraan.filter(c => c.name.toLowerCase().includes(q));
-    renderVehicleList(filtered);
+    const q = e.target.value.toLowerCase(); const filtered = databaseKendaraan.filter(c => c.name.toLowerCase().includes(q)); renderVehicleList(filtered);
 }
 function handleCompanySearch(e) {
-    const q = e.target.value.toLowerCase();
-    const filtered = databaseCompany.filter(c => c.toLowerCase().includes(q));
-    renderCompanyList(filtered);
+    const q = e.target.value.toLowerCase(); const filtered = databaseCompany.filter(c => c.toLowerCase().includes(q)); renderCompanyList(filtered);
 }
 function renderCityList(list) {
-    const ul = document.getElementById('cityList');
-    ul.innerHTML = '';
+    const ul = document.getElementById('cityList'); ul.innerHTML = '';
     list.forEach(city => {
         const li = document.createElement('li'); li.className = 'sheet-item'; li.innerHTML = `<i class="fa-solid fa-location-dot"></i> <span>${city}</span>`;
         li.onclick = () => { document.getElementById(currentTarget === 'from' ? 'valFrom' : 'valTo').innerText = city; document.getElementById(currentTarget === 'from' ? 'valFrom' : 'valTo').classList.remove('placeholder-active'); closeAllSheets(); };
@@ -732,8 +737,7 @@ function renderCityList(list) {
     });
 }
 function renderVehicleList(list) {
-    const ul = document.getElementById('vehicleList');
-    ul.innerHTML = '';
+    const ul = document.getElementById('vehicleList'); ul.innerHTML = '';
     if(list.length === 0) { ul.innerHTML = '<li class="sheet-item" style="justify-content: center; color: gray;">Tidak ditemukan...</li>'; return; }
     list.forEach(veh => {
         const li = document.createElement('li'); li.className = 'sheet-item'; li.innerHTML = `<i class="fa-solid ${veh.icon}"></i> <span>${veh.name}</span>`;
@@ -742,8 +746,7 @@ function renderVehicleList(list) {
     });
 }
 function renderCompanyList(list) {
-    const ul = document.getElementById('companyList');
-    ul.innerHTML = '';
+    const ul = document.getElementById('companyList'); ul.innerHTML = '';
     if(list.length === 0) { ul.innerHTML = '<li class="sheet-item" style="justify-content: center; color: gray;">Tidak ditemukan...</li>'; return; }
     list.forEach(comp => {
         const li = document.createElement('li'); li.className = 'sheet-item'; li.innerHTML = `<i class="fa-solid fa-building"></i> <span>${comp}</span>`;
@@ -752,8 +755,7 @@ function renderCompanyList(list) {
     });
 }
 function swapRoutes() {
-    const fromEl = document.getElementById('valFrom');
-    const toEl = document.getElementById('valTo');
+    const fromEl = document.getElementById('valFrom'); const toEl = document.getElementById('valTo');
     const tempHTML = fromEl.innerHTML; const tempClass = fromEl.className;
     fromEl.innerHTML = toEl.innerHTML; fromEl.className = toEl.className;
     toEl.innerHTML = tempHTML; toEl.className = tempClass;
@@ -764,10 +766,8 @@ function showPopup(modalId) {
     document.getElementById(modalId).classList.add('active');
 }
 function closeCustomPopups() {
-    document.getElementById('popupOverlay').classList.remove('active');
-    document.querySelectorAll('.modern-popup').forEach(p => p.classList.remove('active'));
+    document.getElementById('popupOverlay').classList.remove('active'); document.querySelectorAll('.modern-popup').forEach(p => p.classList.remove('active'));
 }
-
 function executeFinalBooking() {
     let total = formatRupiah(activeLayananData.harga * selectedSeatIds.length);
     let dObj = new Date(selectedBookingDate);
@@ -776,10 +776,14 @@ function executeFinalBooking() {
     showPopup('modalConfirmation');
 }
 
-// PERUBAHAN PENTING: MENGGUNAKAN VARIABEL GLOBAL DARI JAGEL
+// =================================================================
+// 5. PENYIMPANAN TIKET (Menulis ke Firebase)
+// =================================================================
+
 async function processBookingData() {
     const btn = document.getElementById('btnProcessBooking');
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Loading...'; btn.disabled = true;
+    
     let finalBookingDate = selectedBookingDate;
     if (selectedBookingDate && !selectedBookingDate.includes('T')) {
         let now = new Date();
@@ -788,33 +792,35 @@ async function processBookingData() {
         finalBookingDate = `${selectedBookingDate}T${hours}:${mins}:00`;
     }
     
-    // Payload menarik data dari variabel lokal HTML Jagel
-    const payload = {
-        action: "bookTicket",
+    let invID = "INV-" + new Date().getTime();
+    const payloadPemesanan = {
+        idBooking: invID,
         userid: SESSION_USER_ID,
-        nama: USER_NAMA,
+        namaPenumpang: USER_NAMA,
         email: USER_EMAIL,
-        hp: USER_HP,
+        noHp: USER_HP,
         namaPerusahaan: activeLayananData.namaPerusahaan,
         merkKendaraan: activeLayananData.merk,
-        idKursi: selectedSeatIds.join(', '),
+        nomorKursi: selectedSeatIds.join(', '),
         asal: activeLayananData.asal,
         tujuan: activeLayananData.tujuan,
-        harga: activeLayananData.harga,
+        harga: (activeLayananData.harga * selectedSeatIds.length),
         jenisKendaraan: activeLayananData.jenis,
-        tanggalBooking: finalBookingDate
+        tanggalBooking: finalBookingDate,
+        waktuPemesanan: new Date().toISOString(),
+        statusBooking: "Belum Bayar"
     };
     
     try {
-        let res = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify(payload) });
-        let result = await res.json();
-        if (result.status === "success") {
-            // MENGGUNAKAN VARIABEL USER_NAMA BUKAN SHORTCODE
-            document.getElementById('successModalText').innerHTML = `Terima kasih <b>${USER_NAMA}</b>.<br>Kursi <b>${selectedSeatIds.join(', ')}</b> pada armada <b>${activeLayananData.merk}</b> telah dipesan.`;
-            showPopup('modalSuccess');
-        } else { alert("Terjadi kesalahan: " + result.message); }
-    } catch(e) { alert("Kesalahan jaringan saat memproses pesanan."); }
-    finally { btn.innerHTML = 'Proses'; btn.disabled = false; }
+        await db.collection("Pemesanan").add(payloadPemesanan); // Menembak ke Firebase!
+        document.getElementById('successModalText').innerHTML = `Terima kasih <b>${USER_NAMA}</b>.<br>Kursi <b>${selectedSeatIds.join(', ')}</b> pada armada <b>${activeLayananData.merk}</b> telah dipesan.`;
+        showPopup('modalSuccess');
+    } catch(e) { 
+        console.error("Gagal Booking:", e);
+        alert("Kesalahan jaringan saat memproses pesanan."); 
+    } finally { 
+        btn.innerHTML = 'Proses'; btn.disabled = false; 
+    }
 }
 
 function finishAllProcess() {
@@ -823,11 +829,3 @@ function finishAllProcess() {
     if(document.getElementById('searchResultsPanel').classList.contains('active')){ executeSearch(); }
     fetchMyTicketsHistory();
 }
-
-// Tes tulis data ke Firestore
-db.collection("Test").add({
-  pesan: "Halo Firebase!",
-  waktu: new Date()
-})
-.then(() => { console.log("Berhasil terhubung ke Firebase!"); })
-.catch((error) => { console.error("Gagal terhubung: ", error); });
